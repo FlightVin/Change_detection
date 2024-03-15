@@ -7,26 +7,26 @@ class LocalArgs:
     """
     Class to hold local configuration arguments.
     """
-    # lora_path: str='models/vit_finegrained_5x40_procthor.pt'
-    lora_path: str = ""
-    test_folder_path: str='/scratch/vineeth.bhat/8-room-new'
-    rearranged_test_folder_path: str='/scratch/vineeth.bhat/8-room-new' # basically the dataset of the stuff ebing localised
+    lora_path: str='models/vit_finegrained_5x40_procthor.pt'
+    test_folder_path: str='/scratch/vineeth.bhat/mainlab_scan_2'
+    rearranged_test_folder_path: str='/scratch/vineeth.bhat/mainlab_scan_2' # basically the dataset of the stuff ebing localised
+    pose_file: str='/scratch/vineeth.bhat/mainlab_scan_2/poses.txt'
     device: str='cuda'
     sam_checkpoint_path: str = '/scratch/vineeth.bhat/sam_vit_h_4b8939.pth'
     ram_pretrained_path: str = '/scratch/vineeth.bhat/ram_swin_large_14m.pth'
-    downsampling_rate: int = 5 # downsample points every these many frames
+    downsampling_rate: int = 1000 # downsample points every these many frames
 
 
-    save_dir: str = "/scratch/vineeth.bhat/results/8-room-new-FourDNet"
-    sampling_period: int = 20
-    start_file_index: int = 4
-    last_file_index: int = 2000
-    rot_correction: float = 30.0 # keep as 30 for 8-room-new 
+    save_dir: str = "/scratch/vineeth.bhat/results/real-lora"
+    sampling_period: int = 1
+    start_file_index: int = 3
+    last_file_index: int = 20
+    rot_correction: float = 0.0 # keep as 30 for 8-room-new 
     look_around_range: int = 0 # number of sucessive frames to consider at every frame
     save_individual_objects: bool = True
     save_localised_objects: bool = True
 
-    add_pose_noise: bool = True
+    add_pose_noise: bool = False # already noisy
 
     down_sample_voxel_size: float = 0.01 # best results
     create_ext_mesh: bool = False
@@ -36,16 +36,18 @@ class LocalArgs:
     fpfh_voxel_size: float = 0.05   
     localise_times: int = 1
 
-    loc_results_start_file_index: int = 200
-    loc_results_last_file_index: int = 1800
-    loc_results_sampling_period: int = 40
+    loc_results_start_file_index: int = 4
+    loc_results_last_file_index: int = -1
+    loc_results_sampling_period: int = 10
 
-    useLora: bool=False
+    useLora: bool=True
 
     reid_config_file: str = "./FourDNet-wrapper/config.yml"
     reid_model: str = "/scratch/vineeth.bhat/FourDNet/procthor_final.pth"
     reid_num_classes: int = 69
     reid_model_pretrain_path: str = "/scratch/vineeth.bhat/FourDNet/checkpoints/jx_vit_base_p16_224-80ecf9dd.pth"
+
+    min_points: int = 500
 
 if __name__=="__main__":
     start_time = time.time()
@@ -81,42 +83,61 @@ if __name__=="__main__":
 
     frame_counter = 0
 
+    poses = {}
+    with open(largs.pose_file, 'r') as file:
+        for line in file:
+            data = line.strip().split()
+            if data[0] == '#timestamp':
+                continue
+            elif len(data) <= 1:
+                continue
+            pose = np.array([float(x) for x in data[1:8]])
+            # x, y, z, qx, qy, qz, qw = pose
+            # pose = np.array([x, y, z, qw, qx, qy, qz])
+            ID = int(data[8])
+
+            poses[ID] = pose
+
     for cur_frame in tqdm(range(largs.start_file_index, largs.last_file_index + 1, largs.sampling_period), total=(largs.last_file_index-largs.start_file_index)//largs.sampling_period):
         for i in range(cur_frame, min(largs.last_file_index + 1, cur_frame + largs.look_around_range + 1)):
             print(f"\n\tSeeing image {i} currently")
             image_file_path = os.path.join(largs.test_folder_path, 
-                                        f"rgb/{i}.png")
+                                        f"rgb_shape_corrected/{i}.jpg")
             depth_file_path = os.path.join(largs.test_folder_path, 
-                                        f"depth/{i}.npy")
-            pose_file_path = os.path.join(largs.test_folder_path, 
-                                        f"pose/{i}.txt")
+                                        f"depth_npy_corrected/{i}.npy")
+            # pose_file_path = os.path.join(largs.test_folder_path, 
+            #                             f"pose/{i}.txt")
 
             
-            with open(pose_file_path, 'r') as file:
-                pose_dict = file.read()
-            pose_dict = ast.literal_eval(pose_dict)
-            pose_dict = {
-                "position": {
-                    "x": pose_dict[0]['x'],
-                    "y": pose_dict[0]['y'],
-                    "z": pose_dict[0]['z']
-                },
-                "rotation": {
-                    "x": pose_dict[1]['x'] + largs.rot_correction,
-                    "y": pose_dict[1]['y'],
-                    "z": pose_dict[1]['z']
-                }
-            }
+            # with open(pose_file_path, 'r') as file:
+            #     pose_dict = file.read()
+            # pose_dict = ast.literal_eval(pose_dict)
+            # pose_dict = {
+            #     "position": {
+            #         "x": pose_dict[0]['x'],
+            #         "y": pose_dict[0]['y'],
+            #         "z": pose_dict[0]['z']
+            #     },
+            #     "rotation": {
+            #         "x": pose_dict[1]['x'] + largs.rot_correction,
+            #         "y": pose_dict[1]['y'],
+            #         "z": pose_dict[1]['z']
+            #     }
+            # }
 
-            q = Rotation.from_euler('xyz', [r for _, r in pose_dict["rotation"].items()], degrees=True).as_quat()
-            t = np.array([x for _, x in pose_dict["position"].items()])
-            pose = np.concatenate([t, q])
+            # q = Rotation.from_euler('xyz', [r for _, r in pose_dict["rotation"].items()], degrees=True).as_quat()
+            # t = np.array([x for _, x in pose_dict["position"].items()])
+            # pose = np.concatenate([t, q])
+
+            pose = poses[i]
 
             mem.process_image(testname=f"view%d" % i, 
                                 image_path = image_file_path, 
                                 depth_image_path = depth_file_path, 
                                 pose=pose,
-                                verbose=False, add_noise=largs.add_pose_noise, useLora = largs.useLora)
+                                verbose=False, add_noise=largs.add_pose_noise, 
+                                useLora = largs.useLora, min_points = largs.min_points,
+                                outlier_removal_config = "")
             
             pid = psutil.Process()
             memory_info = pid.memory_info()
@@ -255,7 +276,7 @@ if __name__=="__main__":
         image_file_path = os.path.join(largs.rearranged_test_folder_path, 
                                     f"rgb/{i}.png")
         depth_file_path = os.path.join(largs.rearranged_test_folder_path, 
-                                    f"depth/{i}.npy")
+                                    f"depth_npy/{i}.npy")
         pose_file_path = os.path.join(largs.rearranged_test_folder_path, 
                                     f"pose/{i}.txt")
 

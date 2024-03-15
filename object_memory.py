@@ -128,14 +128,22 @@ class LoraRevolver:
         - model_checkpoint (str): Checkpoint for the base ViT model.
         """
         self.device = device
-        
-        # self.base_model will be augmented with a saved set of lora_weights
-        # self.lora_model is the augmented model (NOTE)
-        self.base_model = ViTModel.from_pretrained(
-            model_checkpoint,
-            ignore_mismatched_sizes=True
-        ).to(self.device)
-        self.lora_model = self.base_model
+
+        self.reid_largs = largs
+
+        # if FourDNet
+        if self.reid_largs is not None:
+            self.FourDNet = load_reid_model(self.reid_largs)
+            print("Loaded FourDNet")
+
+        else:
+            # self.base_model will be augmented with a saved set of lora_weights
+            # self.lora_model is the augmented model (NOTE)
+            self.base_model = ViTModel.from_pretrained(
+                model_checkpoint,
+                ignore_mismatched_sizes=True
+            ).to(self.device)
+            self.lora_model = self.base_model
 
         # image preprocessors the ViT needs
         self.image_processor = AutoImageProcessor.from_pretrained(model_checkpoint)
@@ -161,13 +169,7 @@ class LoraRevolver:
         # only expects store lora_checkpoints.pt objects created by this class
         self.ckpt_library = {}
 
-        self.reid_largs = largs
-
-        # if FourDNet
-        if self.reid_largs is not None:
-            self.FourDNet = load_reid_model(self.reid_largs)
-            print("Loaded FourDNet")
-
+        
 
     def load_lora_ckpt_from_file(self, config_path, name):
         """
@@ -213,7 +215,7 @@ class LoraRevolver:
     # loraModule.encode_image_FourDNet(image_path, depth_image_path)
 
     def encode_image_FourDNet(self, images, depths):
-        return [get_reid_emb_new(self.FourDNet, image, depth).cpu()[0]
+        return [get_reid_emb_new(self.FourDNet, image, depth)[0].cpu()[0]
                 for image, depth in zip(images, depths)]
     
 
@@ -538,7 +540,9 @@ class ObjectFinder:
                                 "marble",
                                 "pillar",
                                 "dark",
-                                "sea"
+                                "sea",
+                                "cabinet",
+                                "office"
             ]
             sub_phrases_to_ignore = [
                                 "room",
@@ -564,6 +568,14 @@ class ObjectFinder:
                                 "window",
                                 "vase",
                                 "bureau",
+                                "computer",
+                                "cubicle",
+                                "supply",
+                                "sit",
+                                "stall",
+                                "fan",
+                                "cabinet",
+                                "job"
             ]
 
 
@@ -646,10 +658,28 @@ class ObjectFinder:
             raise NotImplementedError
         else:
             if for_FourDNet:
-                raise
-            else:
                 depth_image = np.load(depth_image_path)
                 
+                w, h = depth_image.shape
+                num_objs = masks.shape[0]
+
+                stacked_depth = np.tile(depth_image, (num_objs, 1, 1))  # Get all centroids/point clouds together
+                stacked_depth[masks.squeeze(dim=1).cpu() == False] = 0  # Remove the depth channel from the masks
+
+                depth_maps = []
+
+                for i in range(num_objs):
+                    depth_map = np.copy(stacked_depth[i])  # Create a copy for each object
+                    
+                    # Filter out areas outside the mask
+                    depth_map[masks[i].squeeze().cpu() == False] = 0
+                    
+                    depth_maps.append(depth_map)
+                
+                return depth_maps
+            else:
+                depth_image = np.load(depth_image_path)
+
                 w, h = depth_image.shape
                 num_objs = masks.shape[0]
 
@@ -670,6 +700,7 @@ class ObjectFinder:
                 all_pointclouds = [pcd[:, pcd[2, :] != 0] for pcd in all_pointclouds]
                 
                 return all_pointclouds
+  
         
 
 """
@@ -992,7 +1023,7 @@ class ObjectMemory:
         self.objectFinder._load_models(ram_pretrained_path)
         self.objectFinder._load_sam(sam_checkpoint_path)
 
-        if lora_path != None:
+        if lora_path != None and lora_path != "":
             self.loraModule.load_lora_ckpt_from_file(lora_path, "5x40")
 
         self.num_objects_stored = 0
@@ -1033,13 +1064,12 @@ class ObjectMemory:
 
         if obj_grounded_imgs is None:
             return None, None, None
-        
-        obj_depth_maps = self.objectFinder.getDepth(depth_image_path, obj_masks, for_FourDNet=True)
 
         # get ViT+LoRA embeddings, use bounding boxes and the image to get grounded images
         if useLora:
             embs = np.array(self.loraModule.encode_image(obj_grounded_imgs).cpu())
         else:
+            obj_depth_maps = self.objectFinder.getDepth(depth_image_path, obj_masks, for_FourDNet=True)
             embs = np.array(self.loraModule.encode_image_FourDNet(obj_grounded_imgs, obj_depth_maps))
         
         # filter out the pointclouds. NOTE: pointclouds are transformed to global pose later.
@@ -1086,6 +1116,10 @@ class ObjectMemory:
         # Detect all objects within the config
         obj_phrases, embs, obj_pointclouds = self._get_object_info(image_path, depth_image_path, useLora)
 
+        # print("\t\t==================       ", obj_phrases)
+        # print("\t\t==================       ", embs)
+        # print("\t\t==================       ", obj_pointclouds)
+
         if obj_phrases is None:
             if verbose:
                 print("No Objects found")
@@ -1093,12 +1127,17 @@ class ObjectMemory:
         
         # Outlier removal
         filtered_pointclouds = []
-        for points in obj_pointclouds:
-            pcd = o3d.geometry.PointCloud()
-            pcd.points = o3d.utility.Vector3dVector(points.T)
-            inlier_pcd, _ = pcd.remove_radius_outlier(nb_points=outlier_removal_config["radius_nb_points"],
-                                                            radius=outlier_removal_config["radius"])
-            filtered_pointclouds.append(np.asarray(inlier_pcd.points).T)
+        if outlier_removal_config == "":
+            filtered_pointclouds = obj_pointclouds
+        else:
+            for points in obj_pointclouds:
+                pcd = o3d.geometry.PointCloud()
+                pcd.points = o3d.utility.Vector3dVector(points.T)
+                inlier_pcd, _ = pcd.remove_radius_outlier(nb_points=outlier_removal_config["radius_nb_points"],
+                                                                radius=outlier_removal_config["radius"])
+                filtered_pointclouds.append(np.asarray(inlier_pcd.points).T)
+
+        # print("\t\t==================       ", filtered_pointclouds)
 
         if pose is None:
             raise NotImplementedError # TODO: mapping without pose :)
