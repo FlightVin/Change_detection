@@ -41,6 +41,11 @@ class LocalArgs:
 
     useLora: bool=False
 
+    reid_config_file: str = "./FourDNet-wrapper/config.yml"
+    reid_model: str = "/scratch/vineeth.bhat/FourDNet/procthor_final.pth"
+    reid_num_classes: int = 69
+    reid_model_pretrain_path: str = "/scratch/vineeth.bhat/FourDNet/checkpoints/jx_vit_base_p16_224-80ecf9dd.pth"
+
 if __name__=="__main__":
     start_time = time.time()
 
@@ -59,7 +64,7 @@ if __name__=="__main__":
     mem = ObjectMemory(device = largs.device, 
                        ram_pretrained_path=largs.ram_pretrained_path,
                        sam_checkpoint_path = largs.sam_checkpoint_path,
-                       lora_path=largs.lora_path)
+                       lora_path=largs.lora_path, reid_largs = largs)
     print("Memory Init'ed\n")
 
     if largs.last_file_index == -1:

@@ -18,7 +18,7 @@ sys.path.append(os.path.join(os.getcwd(), "FourDNet-wrapper", "solver"))
 sys.path.append(os.path.join(os.getcwd(), "FourDNet-wrapper", "utils"))
 
 # fourDNet
-from test_heatmap import load_reid_model, get_reid_emb
+from test_heatmap import load_reid_model, get_reid_emb_new
 
 import os, sys, time
 import tyro
@@ -119,7 +119,7 @@ class LoraRevolver:
     """
     Loads a base ViT and a set of LoRa configs, allows loading and swapping between them.
     """
-    def __init__(self, device, model_checkpoint="google/vit-base-patch16-224-in21k"):
+    def __init__(self, device, model_checkpoint="google/vit-base-patch16-224-in21k", largs = None):
         """
         Initializes the LoraRevolver object.
         
@@ -160,6 +160,13 @@ class LoraRevolver:
         # stored lora_configs, ready to be swapped in
         # only expects store lora_checkpoints.pt objects created by this class
         self.ckpt_library = {}
+
+        self.reid_largs = largs
+
+        # if FourDNet
+        if self.reid_largs is not None:
+            self.FourDNet = load_reid_model(self.reid_largs)
+            print("Loaded FourDNet")
 
 
     def load_lora_ckpt_from_file(self, config_path, name):
@@ -202,6 +209,14 @@ class LoraRevolver:
             emb = self.lora_model(img_batch.to(self.device), output_hidden_states=True).last_hidden_state[:,0,:]
         
         return emb
+    
+    # loraModule.encode_image_FourDNet(image_path, depth_image_path)
+
+    def encode_image_FourDNet(self, images, depths):
+        return [get_reid_emb_new(self.FourDNet, image, depth).cpu()[0]
+                for image, depth in zip(images, depths)]
+    
+
     
     def train_current_lora_model(self):
         """
@@ -615,7 +630,7 @@ class ObjectFinder:
         plt.imshow(af)
 
     # TODO determine whether outliers need to be filtered here
-    def getDepth(self, depth_image_path, masks, f=300):
+    def getDepth(self, depth_image_path, masks, f=300, for_FourDNet = False):
         """
         Returns a 3D point cloud corresponding to each object based on depth information.
 
@@ -630,28 +645,31 @@ class ObjectFinder:
         if depth_image_path is None:
             raise NotImplementedError
         else:
-            depth_image = np.load(depth_image_path)
-            
-            w, h = depth_image.shape
-            num_objs = masks.shape[0]
+            if for_FourDNet:
+                raise
+            else:
+                depth_image = np.load(depth_image_path)
+                
+                w, h = depth_image.shape
+                num_objs = masks.shape[0]
 
-            stacked_depth = np.tile(depth_image, (num_objs, 1, 1))  # Get all centroids/point clouds together
-            stacked_depth[masks.squeeze(dim=1).cpu() == False] = 0  # Remove the depth channel from the masks
+                stacked_depth = np.tile(depth_image, (num_objs, 1, 1))  # Get all centroids/point clouds together
+                stacked_depth[masks.squeeze(dim=1).cpu() == False] = 0  # Remove the depth channel from the masks
 
-            horizontal_distance = np.tile(np.linspace(-h/2, h/2, h, dtype=np.float32), (num_objs, w, 1))
-            vertical_distance = np.tile(np.linspace(w/2, -w/2, w, dtype=np.float32).reshape(-1, 1), (num_objs, 1, h))
+                horizontal_distance = np.tile(np.linspace(-h/2, h/2, h, dtype=np.float32), (num_objs, w, 1))
+                vertical_distance = np.tile(np.linspace(w/2, -w/2, w, dtype=np.float32).reshape(-1, 1), (num_objs, 1, h))
 
-            X = horizontal_distance * stacked_depth / f
-            Y = vertical_distance * stacked_depth / f
-            Z = stacked_depth
+                X = horizontal_distance * stacked_depth / f
+                Y = vertical_distance * stacked_depth / f
+                Z = stacked_depth
 
-            # Combine calculated X, Y, Z points
-            all_pointclouds = np.stack([X, Y, Z], 1).reshape((num_objs, 3, -1))
+                # Combine calculated X, Y, Z points
+                all_pointclouds = np.stack([X, Y, Z], 1).reshape((num_objs, 3, -1))
 
-            # Filter out [0,0,0]
-            all_pointclouds = [pcd[:, pcd[2, :] != 0] for pcd in all_pointclouds]
-            
-            return all_pointclouds
+                # Filter out [0,0,0]
+                all_pointclouds = [pcd[:, pcd[2, :] != 0] for pcd in all_pointclouds]
+                
+                return all_pointclouds
         
 
 """
@@ -956,7 +974,7 @@ class ObjectInfo:
 
 
 class ObjectMemory:
-    def __init__(self, device, ram_pretrained_path, sam_checkpoint_path, lora_path=None):
+    def __init__(self, device, ram_pretrained_path, sam_checkpoint_path, lora_path=None, reid_largs = None):
         """
         Initializes the ObjectMemory instance.
 
@@ -969,7 +987,7 @@ class ObjectMemory:
         self.device = device
 
         self.objectFinder = ObjectFinder(self.device)
-        self.loraModule = LoraRevolver(self.device)
+        self.loraModule = LoraRevolver(self.device, largs = reid_largs)
 
         self.objectFinder._load_models(ram_pretrained_path)
         self.objectFinder._load_sam(sam_checkpoint_path)
@@ -1016,11 +1034,13 @@ class ObjectMemory:
         if obj_grounded_imgs is None:
             return None, None, None
         
+        obj_depth_maps = self.objectFinder.getDepth(depth_image_path, obj_masks, for_FourDNet=True)
+
         # get ViT+LoRA embeddings, use bounding boxes and the image to get grounded images
         if useLora:
             embs = np.array(self.loraModule.encode_image(obj_grounded_imgs).cpu())
         else:
-            raise
+            embs = np.array(self.loraModule.encode_image_FourDNet(obj_grounded_imgs, obj_depth_maps))
         
         # filter out the pointclouds. NOTE: pointclouds are transformed to global pose later.
         obj_pointclouds = self.objectFinder.getDepth(depth_image_path, obj_masks)
