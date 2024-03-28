@@ -2,15 +2,17 @@ from object_memory import *
 import ast, pickle, shutil, time
 import psutil, os
 import pdb, pickle
+import csv
+
 @dataclass
 class LocalArgs:
     """
     Class to hold local configuration arguments.
     """
     lora_path: str='models/vit_finegrained_5x40_procthor.pt'
-    test_folder_path: str='/scratch/vineeth.bhat/mainlab_scan_2'
-    rearranged_test_folder_path: str='/scratch/vineeth.bhat/mainlab_scan_2' # basically the dataset of the stuff ebing localised
-    pose_file: str='/scratch/vineeth.bhat/mainlab_scan_2/poses.txt'
+    test_folder_path: str='/scratch/vineeth.bhat/sequence2'
+    rearranged_test_folder_path: str='/scratch/vineeth.bhat/sequence2' # basically the dataset of the stuff ebing localised
+    pose_file: str='/scratch/vineeth.bhat/sequence2/poses.csv'
     device: str='cuda'
     sam_checkpoint_path: str = '/scratch/vineeth.bhat/sam_vit_h_4b8939.pth'
     ram_pretrained_path: str = '/scratch/vineeth.bhat/ram_swin_large_14m.pth'
@@ -59,9 +61,21 @@ if __name__=="__main__":
     os.makedirs(largs.save_dir, exist_ok=True)
     print(f"Created save directory {largs.save_dir}")
 
-    files = os.listdir(os.path.join(largs.test_folder_path, "rgb"))
+    files = os.listdir(os.path.join(largs.test_folder_path, "color_corrected"))
     num_files = len(files)
     print(f"We have {num_files} files")
+
+    poses = {}
+    csv_file_path = largs.pose_file  # Change this to the path of your CSV file
+    with open(csv_file_path, newline='') as csvfile:
+        csv_reader = csv.reader(csvfile, delimiter=',')
+        next(csv_reader)  # Skip the header row
+        for row in csv_reader:
+            ID = int(row[0])
+            Tx,	Ty,	Tz,	Qw,	Qx,	Qy,	Qz = [float(val) for val in row[1:]]
+            values = np.array([Tx,Ty,Tz,Qw,Qx,Qy,Qz])
+            poses[ID] = values
+
 
     print("\nBegin Memory Initialization")
     if largs.useLora:
@@ -83,28 +97,15 @@ if __name__=="__main__":
 
     frame_counter = 0
 
-    poses = {}
-    with open(largs.pose_file, 'r') as file:
-        for line in file:
-            data = line.strip().split()
-            if data[0] == '#timestamp':
-                continue
-            elif len(data) <= 1:
-                continue
-            pose = np.array([float(x) for x in data[1:8]])
-            # x, y, z, qx, qy, qz, qw = pose
-            # pose = np.array([x, y, z, qw, qx, qy, qz])
-            ID = int(data[8])
-
-            poses[ID] = pose
-
     for cur_frame in tqdm(range(largs.start_file_index, largs.last_file_index + 1, largs.sampling_period), total=(largs.last_file_index-largs.start_file_index)//largs.sampling_period):
         for i in range(cur_frame, min(largs.last_file_index + 1, cur_frame + largs.look_around_range + 1)):
             print(f"\n\tSeeing image {i} currently")
+
+            file_num = "{:03d}".format(i)
             image_file_path = os.path.join(largs.test_folder_path, 
-                                        f"rgb_shape_corrected/{i}.jpg")
+                                        f"color_corrected/{file_num}.jpg")
             depth_file_path = os.path.join(largs.test_folder_path, 
-                                        f"depth_npy_corrected/{i}.npy")
+                                        f"depth_corrected_npy/{file_num}.npy")
             # pose_file_path = os.path.join(largs.test_folder_path, 
             #                             f"pose/{i}.txt")
 
