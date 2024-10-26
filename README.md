@@ -1,4 +1,6 @@
-# Change detection repo, contains the codebase used to obtain results so far
+# Archived -- use [https://github.com/instance-based-loc/instance-based-loc](https://github.com/instance-based-loc/instance-based-loc) 
+
+Change detection repo, contains the codebase used to obtain results so far
 
 ## Setting up the environment
 
